@@ -1,3 +1,4 @@
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -106,3 +107,25 @@ class LiveMarkdownTests(unittest.IsolatedAsyncioTestCase):
                 )
                 await pilot.press("q")
                 self.assertFalse(app.is_running)
+
+    async def test_close_with_slow_widget_cleanup(self):
+        class SlowCleanup(Static):
+            async def on_unmount(self):
+                # Leave time for the refresh timer to fire after widgets vanish.
+                await asyncio.sleep(1)
+
+        class SlowExitApp(LiveMarkdown):
+            def compose(self):
+                yield from super().compose()
+                yield SlowCleanup()
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "board.md"
+            path.write_text("# Board\n", encoding="utf-8")
+            app = SlowExitApp(path)
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                self.assertEqual(
+                    app.query_one(MarkdownViewer).document.source, "# Board\n"
+                )
+            self.assertFalse(app.is_running)

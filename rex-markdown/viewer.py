@@ -58,11 +58,15 @@ class LiveMarkdown(App):
         yield Footer()
 
     async def on_mount(self) -> None:
-        self.query_one(MarkdownViewer).focus()
+        viewer = self.query_one(MarkdownViewer)
+        viewer.focus()
         await self.reload_file()
-        self.set_interval(0.75, self.reload_file)
+        # Cancel refresh (including an in-flight read) before the viewer unmounts.
+        viewer.set_interval(0.75, self.reload_file)
 
     async def reload_file(self) -> None:
+        if not self.is_running:
+            return
         status = self.query_one("#status", Static)
         try:
             source = await asyncio.to_thread(self.path.read_text, encoding="utf-8")
