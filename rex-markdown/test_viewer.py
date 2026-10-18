@@ -60,6 +60,13 @@ class LiveMarkdownTests(unittest.IsolatedAsyncioTestCase):
                 viewer = app.query_one(MarkdownViewer)
                 await pilot.pause()
                 self.assertFalse(viewer.show_table_of_contents)
+                # Header and footer leave 30 document rows: half a screen is 15.
+                await pilot.press("d")
+                await pilot.pause()
+                self.assertEqual(viewer.scroll_y, 15)
+                await pilot.press("u", "u")
+                await pilot.pause()
+                self.assertEqual(viewer.scroll_y, 0)
                 paragraphs = list(app.query("MarkdownParagraph"))
                 # Click real links: external and file links must not crash or
                 # replace the watched document; anchors still navigate.
@@ -81,6 +88,19 @@ class LiveMarkdownTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.resize_terminal(45, 20)
                 await pilot.pause()
                 self.assertFalse(viewer.show_table_of_contents)
+                # Resizing leaves 18 document rows; do not retain the old step.
+                await pilot.press("d")
+                await pilot.pause()
+                self.assertEqual(viewer.scroll_y, 9)
+                await pilot.press("G")
+                await pilot.pause()
+                bottom = viewer.scroll_y
+                await pilot.press("d")
+                await pilot.pause()
+                self.assertEqual(viewer.scroll_y, bottom)
+                await pilot.press("u")
+                await pilot.pause()
+                self.assertEqual(viewer.scroll_y, bottom - 9)
                 self.assertEqual(
                     viewer.document.source, path.read_text(encoding="utf-8")
                 )

@@ -88,6 +88,7 @@ belongs to the Amp tool. Keep the checkout in place when using these commands.
 
 - Mouse wheel / arrow keys / Page Up / Page Down: scroll
 - `j` / `k`: scroll down / up; `g` / `G`: top / bottom
+- `d` / `u`: down / up half a screen, like `less` (adapts to pane height)
 - `t`: expand/collapse the clickable table of contents (**hidden by default**)
 - `r`: refresh; `q`: exit and close the preview pane
 - File read failures show a retrying status and preserve the last good content.

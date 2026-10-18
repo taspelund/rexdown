@@ -40,6 +40,8 @@ class LiveMarkdown(App):
         Binding("r", "reload", "Refresh", priority=True),
         Binding("j", "down", "Down", show=False),
         Binding("k", "up", "Up", show=False),
+        Binding("d", "half_page(1)", "Half page down", show=False),
+        Binding("u", "half_page(-1)", "Half page up", show=False),
         Binding("g", "top", "Top", show=False),
         Binding("G", "bottom", "Bottom", show=False),
     ]
@@ -91,6 +93,11 @@ class LiveMarkdown(App):
 
     def action_up(self) -> None:
         self.query_one(MarkdownViewer).scroll_up(animate=False)
+
+    def action_half_page(self, direction: int) -> None:
+        viewer = self.query_one(MarkdownViewer)
+        rows = max(1, viewer.scrollable_content_region.height // 2)
+        viewer.scroll_relative(y=direction * rows, animate=False)
 
     def action_top(self) -> None:
         self.query_one(MarkdownViewer).scroll_home(animate=False)
