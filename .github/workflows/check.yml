@@ -1,0 +1,39 @@
+name: Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Python ${{ matrix.python }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            python: "3.11"
+          - os: macos-latest
+            python: "3.14"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0d8abe699bfb85fec6de9f7adb5ae17292296ff # v6
+        with:
+          version: "0.13.1"
+          python-version: ${{ matrix.python }}
+      - name: Lint
+        run: uvx ruff@0.17.1 check rex-markdown
+      - name: Check formatting
+        run: uvx ruff@0.17.1 format --check rex-markdown
+      - name: Test viewer
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: uv run --with textual==8.2.8 python -m unittest discover -s rex-markdown -p 'test_*.py' -v

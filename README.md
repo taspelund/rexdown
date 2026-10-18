@@ -1,4 +1,4 @@
-# Live Markdown in Rex
+# Rexdown
 
 A live, read-only Markdown viewer for Rex, with an optional Amp plugin. Keep a
 design document or plan beside your conversation while edits appear automatically.
@@ -7,6 +7,20 @@ The table of contents is **hidden by default**; press `t` to expand/collapse it.
 With the plugin installed, ask Amp: **“Open README.md in a Rex pane.”** The
 `rex_open_markdown` tool opens a split to the right without taking keyboard focus.
 Reopening the same file from the same thread and Rex window reuses the preview.
+
+Rexdown is an experimental, independent project, not an official Rex or Amp
+integration. The plugin directory and tool name remain `rex-markdown` and
+`rex_open_markdown` so existing installations continue to work.
+
+## Get the source
+
+```sh
+git clone https://github.com/taspelund/rexdown.git
+cd rexdown
+```
+
+Or use `jj git clone https://github.com/taspelund/rexdown.git rexdown` and open
+that checkout. Neither jj nor Git is needed at runtime.
 
 ## Requirements
 
@@ -49,7 +63,8 @@ if [ -e "$destination" ] || [ -L "$destination" ] ||
   printf 'Already installed at %s (or .ts); see Update below.\n' "$destination"
 else
   mkdir -p "$(dirname "$destination")" &&
-    cp -R ./rex-markdown "$destination"
+    cp -R ./rex-markdown "$destination" &&
+    cp ./LICENSE "$destination/LICENSE"
 fi
 ```
 
@@ -146,7 +161,7 @@ For local Amp development, put a loader in
 `~/.config/amp/plugins/rex-markdown.ts`, using the actual absolute checkout path:
 
 ```ts
-import register from '/absolute/path/to/amp-rex-markdown/rex-markdown/index.ts'
+import register from '/absolute/path/to/rexdown/rex-markdown/index.ts'
 export const description = 'Open local Markdown in a live Rex pane.'
 export default register
 ```
@@ -163,3 +178,21 @@ uv run --with textual==8.2.8 python -m unittest discover -s rex-markdown -p 'tes
 
 The tests cover live refresh, scroll preservation and clamping, file recovery,
 link handling, keyboard navigation, ToC toggling, resizing, and quitting.
+
+Lint and format checks use the repository's `ruff.toml`:
+
+```sh
+uvx ruff@0.17.1 check rex-markdown
+uvx ruff@0.17.1 format --check rex-markdown
+```
+
+GitHub Actions runs these checks and the headless viewer tests on Ubuntu with
+Python 3.11 and macOS with Python 3.14. This does not test the real Rex server or
+Amp host. Before shipping integration changes, run the install/preview smoke
+check above in Rex, including reopening the same file and verifying that focus
+stays in Amp.
+
+## License
+
+[BSD 3-Clause](LICENSE), copyright 2026 Trey Aspelund. Retain the license when
+redistributing the viewer or plugin.
