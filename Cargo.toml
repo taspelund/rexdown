@@ -1,0 +1,26 @@
+[package]
+name = "rexdown"
+version = "0.2.0"
+edition = "2024"
+license = "BSD-3-Clause"
+description = "A live, read-only terminal Markdown viewer with optional Amp integration"
+repository = "https://github.com/taspelund/rexdown"
+
+[dependencies]
+crossterm = "0.29"
+dirs = "6"
+pulldown-cmark = "0.13"
+ratatui = "0.30"
+syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
+time = "0.3"
+two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }
+unicode-segmentation = "1.12"
+unicode-width = "0.2"
+xterm-query = "0.6.1"
+
+[dev-dependencies]
+roxmltree = "0.21"
+tempfile = "3"
+
+[lints.rust]
+unsafe_code = "forbid"

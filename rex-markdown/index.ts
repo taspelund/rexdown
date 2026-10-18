@@ -3,13 +3,11 @@ import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { realpath, stat } from 'node:fs/promises'
 import { basename, dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 
 export const description = 'Open local Markdown in a live, scrollable Rex pane without leaving Amp.'
 
 const exec = promisify(execFile)
-const viewer = fileURLToPath(new URL('./viewer.py', import.meta.url))
 
 async function rex(...args: string[]) {
 	const { stdout } = await exec('rex', ['--autostart=false', ...args], { timeout: 15_000 })
@@ -22,7 +20,7 @@ export default function (amp: PluginAPI) {
 	amp.registerTool({
 		name: 'rex_open_markdown',
 		title: 'Open live Markdown in Rex',
-		description: 'Open a local Markdown file in a read-only, live-refreshing Rex split beside Amp. Reuses the preview for this thread and file. Does not take focus. Requires Rex and uv on this executor; it cannot open a pane on another machine. Edit the original file normally to update the preview. The user can scroll, press t for contents, and q to close. Use for documents, design whiteboards, and plans the user wants to see in Rex.',
+		description: 'Open a local Markdown file in a read-only, live-refreshing Rex split beside Amp. Reuses the preview for this thread and file. Does not take focus. Requires rex and rexdown on PATH on this executor; it cannot open a pane on another machine. Edit the original file normally to update the preview. The user can scroll, press t for contents, and q to close. Use for documents, design whiteboards, and plans the user wants to see in Rex.',
 		inputSchema: {
 			type: 'object',
 			properties: {
@@ -59,12 +57,17 @@ export default function (amp: PluginAPI) {
 						return JSON.stringify({ reused: true, path, session, block: block.block_id })
 					}
 				}
-				// Resolve dependencies before creating a pane, so install failures do not leave broken splits.
-				const { stdout } = await exec('uv', ['run', '--script', viewer, '--check'], { timeout: 120_000 })
-				const python = stdout.trim()
+				// Resolve on the executor before splitting: Rex may have a different PATH.
+				let viewer: string
+				try {
+					const { stdout } = await exec('rexdown', ['--check'], { timeout: 15_000 })
+					viewer = stdout.trim()
+				} catch (error) {
+					throw new Error('Cannot run rexdown. Install it with cargo install --path . --locked from the Rexdown checkout, and ensure ~/.cargo/bin is on Amp\'s PATH. No pane was opened.', { cause: error })
+				}
 				const created = await rex('split', '-s', session, '-b', anchor,
 					'--split=right', '--ratio=50', '--focus=false', '--shell=none',
-					'--label', label, '--cwd', dirname(path), '--json', '--', python, viewer, path)
+					'--label', label, '--cwd', dirname(path), '--json', '--', viewer, '--', path)
 				return JSON.stringify({ reused: false, path, session, block: created.block_ids[0],
 					note: 'Preview launched. File changes refresh automatically. Use rex capture to inspect startup/rendering.' })
 			}
