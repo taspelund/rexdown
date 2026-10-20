@@ -1,6 +1,7 @@
 mod app;
 mod markdown;
 mod palette;
+mod revision;
 mod screenshot;
 mod theme;
 
@@ -31,7 +32,7 @@ fn run() -> io::Result<()> {
     match args.peek().and_then(|s| s.to_str()) {
         Some("--help" | "-h") => {
             println!(
-                "Rexdown — live, read-only Markdown\n\nUsage: rexdown [--screenshot-dir DIR] [--] FILE\n       rexdown --check\n       rexdown --theme-licenses\n\nCtrl+P command palette: Theme, Quit, Keys, Screenshot, Refresh, Contents\nq quit · t contents · r refresh · d/u half page · j/k scroll\ng/G top/bottom · arrows / PageUp / PageDown · ←/→ pan\n\nScreenshots save SVG files in Pictures/Rexdown by default.\n--screenshot-dir DIR chooses another directory (created on export).\nFilenames include the document name and UTC date/time.\nPolls UTF-8 file contents every 750 ms. No URLs or files are opened by links."
+                "Rexdown — live, read-only Markdown\n\nUsage: rexdown [--screenshot-dir DIR] [--] FILE\n       rexdown --check\n       rexdown --theme-licenses\n\nCtrl+P command palette: themes, keys, screenshots, refresh, contents, changes, quit\nq quit · t contents · r refresh · ? keys · [/] previous/next change\nd/u half page · j/k scroll · g/G top/bottom\narrows / PageUp / PageDown · ←/→ pan · clickable footer\n\nRefresh follows the current source block. Marks show the latest content update.\nScreenshots save SVG files in Pictures/Rexdown by default.\n--screenshot-dir DIR chooses another directory (created on export).\nFilenames include the document name and UTC date/time.\nPolls UTF-8 file contents every 750 ms. No URLs or files are opened by links."
             );
             return Ok(());
         }

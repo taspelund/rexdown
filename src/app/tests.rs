@@ -18,6 +18,10 @@ fn key(app: &mut App, code: KeyCode) -> bool {
     app.event(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)))
 }
 
+fn line(screen: &str, width: usize, row: usize) -> String {
+    screen.chars().skip(width * row).take(width).collect()
+}
+
 fn click(app: &mut App, column: u16, row: u16) {
     app.event(Event::Mouse(MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -25,6 +29,223 @@ fn click(app: &mut App, column: u16, row: u16) {
         row,
         modifiers: KeyModifiers::NONE,
     }));
+}
+
+#[test]
+fn refresh_tracks_the_passage_and_navigates_latest_changes() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("board.md");
+    let source = (0..60)
+        .map(|n| format!("Passage {n}\n\n"))
+        .collect::<String>();
+    std::fs::write(&path, &source).unwrap();
+    let mut app = App::new(path.clone());
+    app.reload();
+    let first = draw(&mut app, 110, 14);
+    assert!(first.contains("Loaded "));
+    app.reload();
+    assert_eq!(
+        draw(&mut app, 110, 14),
+        first,
+        "unchanged polls are not updates"
+    );
+    key(&mut app, KeyCode::PageDown);
+    assert!(line(&draw(&mut app, 110, 14), 110, 1).contains("Passage 6"));
+
+    let added = format!(
+        "# New introduction\n\n{}",
+        source.replace("Passage 30\n", "Changed thirty\n")
+    );
+    std::fs::write(&path, &added).unwrap();
+    app.reload();
+    app.reload(); // Multiple reads before a draw must not lose the old anchor.
+    let updated = draw(&mut app, 110, 14);
+    assert!(line(&updated, 110, 1).contains("Passage 6"));
+    assert!(updated.contains("Updated ") && updated.contains("2 changes"));
+    key(&mut app, KeyCode::Char(']'));
+    let next = draw(&mut app, 110, 14);
+    assert!(line(&next, 110, 1).contains("Changed thirty"));
+    assert!(
+        line(&next, 110, 1).starts_with('▎'),
+        "changed passage has a gutter marker"
+    );
+    key(&mut app, KeyCode::Char('['));
+    assert!(line(&draw(&mut app, 110, 14), 110, 1).contains("New introduction"));
+    key(&mut app, KeyCode::Char(']'));
+    draw(&mut app, 110, 14);
+
+    // Deleting the passage being read follows its successor, not an old screen row.
+    std::fs::write(&path, added.replace("Changed thirty\n\n", "")).unwrap();
+    app.reload();
+    let deleted = draw(&mut app, 110, 14);
+    assert!(line(&deleted, 110, 1).contains("Passage 31"));
+    assert!(deleted.contains("1 change"));
+    app.reload();
+    assert_eq!(
+        draw(&mut app, 110, 14),
+        deleted,
+        "polls retain latest-change markers"
+    );
+    draw(&mut app, 45, 12);
+    key(&mut app, KeyCode::Char('t'));
+    assert!(draw(&mut app, 45, 12).contains("Passage 31"));
+}
+
+#[test]
+fn wrapped_passage_survives_reflow_and_changes_cycle_at_eof() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("board.md");
+    let source = format!(
+        "[Read](#reading)\n\n{}\n\n# Reading\n\n{}\n\n{}\n\nLast paragraph",
+        "Before ".repeat(80),
+        "Needle ".repeat(200),
+        "After ".repeat(90)
+    );
+    std::fs::write(&path, &source).unwrap();
+    let mut app = App::new(path.clone());
+    app.reload();
+    draw(&mut app, 90, 14);
+    click(&mut app, 2, 1);
+    draw(&mut app, 90, 14);
+    for _ in 0..3 {
+        key(&mut app, KeyCode::Down);
+    }
+    assert!(line(&draw(&mut app, 90, 14), 90, 1).contains("Needle"));
+    for width in [45, 110, 62] {
+        assert!(line(&draw(&mut app, width, 14), width as usize, 1).contains("Needle"));
+    }
+    let edited = source
+        .replace("Before ", "A longer introduction ")
+        .replace("Last paragraph", "Changed ending");
+    std::fs::write(&path, edited).unwrap();
+    app.reload();
+    assert!(line(&draw(&mut app, 90, 14), 90, 1).contains("Needle"));
+    key(&mut app, KeyCode::Char(']'));
+    let end = draw(&mut app, 90, 14);
+    assert!(end.contains("Changed ending"));
+    assert!(line(&end, 90, 12).starts_with('▎'));
+    // The end change cannot reach the top of the viewport; still advance past it.
+    key(&mut app, KeyCode::Char(']'));
+    assert!(line(&draw(&mut app, 90, 14), 90, 1).contains("A longer introduction"));
+    key(&mut app, KeyCode::Char('['));
+    assert!(draw(&mut app, 90, 14).contains("Changed ending"));
+    std::fs::write(&path, "").unwrap();
+    app.reload();
+    assert!(!draw(&mut app, 90, 14).contains("Needle"));
+    key(&mut app, KeyCode::Char(']'));
+    std::fs::write(&path, "Recovered").unwrap();
+    app.reload();
+    assert!(draw(&mut app, 90, 14).contains("Recovered"));
+}
+
+#[test]
+fn directly_opened_help_closes_without_opening_commands() {
+    let mut app = App::new(PathBuf::from("board.md"));
+    let document = draw(&mut app, 90, 24);
+    let help_column = line(&document, 90, 23).find("? keys").unwrap() as u16;
+    for from_footer in [true, false] {
+        if from_footer {
+            click(&mut app, help_column, 23);
+        } else {
+            key(&mut app, KeyCode::Char('?'));
+        }
+        let help = draw(&mut app, 90, 24);
+        assert!(help.contains("Key bindings"));
+        key(&mut app, KeyCode::Esc);
+        assert_eq!(draw(&mut app, 90, 24), document);
+    }
+}
+
+#[test]
+fn footer_actions_are_clickable_hoverable_and_survive_notices() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("board.md");
+    std::fs::write(
+        &path,
+        format!(
+            "# Board\n\n[Inspect](https://example.com)\n\n{}",
+            "Body has a long passage that must not leak through a notice.\n\n".repeat(20)
+        ),
+    )
+    .unwrap();
+    let mut app = App::new(path);
+    app.reload();
+    let mut terminal = Terminal::new(TestBackend::new(110, 20)).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let normal = terminal.backend().buffer()[(2, 19)].modifier;
+    app.event(Event::Mouse(MouseEvent {
+        kind: MouseEventKind::Moved,
+        column: 2,
+        row: 19,
+        modifiers: KeyModifiers::NONE,
+    }));
+    terminal.draw(|f| app.draw(f)).unwrap();
+    assert_ne!(terminal.backend().buffer()[(2, 19)].modifier, normal);
+    click(&mut app, 2, 19);
+    assert!(draw(&mut app, 110, 20).contains("Command palette"));
+    key(&mut app, KeyCode::Esc);
+    click(&mut app, 2, 3);
+    let screen = draw(&mut app, 110, 20);
+    assert!(screen.contains("Link (read-only): https://example.com"));
+    let footer = screen.chars().skip(110 * 19).collect::<String>();
+    let contents = footer.find("contents").unwrap();
+    click(&mut app, contents as u16, 19);
+    assert!(draw(&mut app, 110, 20).contains(" Contents"));
+    key(&mut app, KeyCode::Esc);
+    assert!(!draw(&mut app, 110, 20).contains("Link (read-only)"));
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char('r'));
+    assert_eq!(
+        line(&draw(&mut app, 110, 20), 110, 18).trim(),
+        "Already up to date"
+    );
+}
+
+#[test]
+fn contents_hover_covers_the_whole_entry_without_navigating() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("board.md");
+    std::fs::write(
+        &path,
+        format!(
+            "# Alpha\n\n{}## Beta\n\n{}",
+            "Before\n\n".repeat(20),
+            "After\n\n".repeat(20)
+        ),
+    )
+    .unwrap();
+    let mut app = App::new(path);
+    app.reload();
+    key(&mut app, KeyCode::Char('t'));
+    let mut terminal = Terminal::new(TestBackend::new(90, 24)).unwrap();
+    terminal.draw(|f| app.draw(f)).unwrap();
+    let normal = terminal.backend().buffer().clone();
+
+    // Hover the padding, not the label. Moving away, onto the title, or
+    // onto empty contents space must remove the entire highlight.
+    for (column, row) in [(29, 3), (30, 3), (29, 1), (29, 5)] {
+        app.event(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Moved,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+        terminal.draw(|f| app.draw(f)).unwrap();
+        let buffer = terminal.backend().buffer();
+        for y in 1..23 {
+            for x in 0..90 {
+                let cell = &buffer[(x, y)];
+                if (column, row) == (29, 3) && y == 3 && x < 30 {
+                    assert!(cell.modifier.contains(Modifier::REVERSED), "column {x}");
+                    assert_eq!(cell.symbol(), normal[(x, y)].symbol());
+                } else {
+                    assert_eq!(cell, &normal[(x, y)]);
+                }
+            }
+        }
+    }
+    click(&mut app, 29, 3);
+    assert!(line(&draw(&mut app, 90, 24), 90, 1).contains("Beta"));
 }
 
 #[test]
@@ -42,10 +263,15 @@ fn refresh_preserves_offset_then_recovers_and_clamps() {
     let before = draw(&mut app, 90, 24);
     std::fs::write(&path, source.replace("Original", "Replaced")).unwrap();
     app.reload();
-    assert_eq!(
-        draw(&mut app, 90, 24),
-        before.replace("Original", "Replaced")
-    );
+    let after = draw(&mut app, 90, 24);
+    for row in 1..23 {
+        assert_eq!(
+            line(&after, 90, row).trim_start_matches('▎').trim(),
+            line(&before, 90, row)
+                .replace("Original", "Replaced")
+                .trim()
+        );
+    }
     std::fs::remove_file(&path).unwrap();
     app.reload();
     let failed = draw(&mut app, 90, 24);
@@ -180,7 +406,9 @@ fn palette_filters_executes_and_keeps_typing_out_of_document_shortcuts() {
     assert!(draw(&mut app, 90, 24).contains("Key bindings"));
     draw(&mut app, 45, 8);
     key(&mut app, KeyCode::End);
-    assert!(draw(&mut app, 45, 8).contains("Close palette or key help"));
+    assert!(draw(&mut app, 45, 8).contains("Back / close; dismiss notice"));
+    key(&mut app, KeyCode::Esc);
+    assert!(draw(&mut app, 45, 8).contains("Command palette"));
     key(&mut app, KeyCode::Esc);
     palette(&mut app, "zzzzz");
     assert!(draw(&mut app, 45, 12).contains("No matches"));

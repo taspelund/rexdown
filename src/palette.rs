@@ -11,12 +11,15 @@ use crate::theme::Theme;
 
 #[derive(Clone, Copy)]
 pub enum Command {
+    Commands,
     Theme,
     Quit,
     Keys,
     Screenshot,
     Refresh,
     Contents,
+    PreviousChange,
+    NextChange,
     SetTheme(Theme),
     Dismiss,
 }
@@ -30,6 +33,7 @@ pub enum Kind {
 
 pub struct Palette {
     kind: Kind,
+    from_commands: bool,
     query: String,
     selected: usize,
     offset: usize,
@@ -42,6 +46,8 @@ const COMMANDS: &[(&str, Command)] = &[
     ("Keys — show key bindings", Command::Keys),
     ("Screenshot — save viewport as SVG", Command::Screenshot),
     ("Refresh — reread Markdown", Command::Refresh),
+    ("Previous change — jump backward [", Command::PreviousChange),
+    ("Next change — jump forward ]", Command::NextChange),
     ("Contents — toggle heading list", Command::Contents),
 ];
 const KEYS: &[&str] = &[
@@ -49,6 +55,8 @@ const KEYS: &[&str] = &[
     "q / Ctrl+C   Quit viewer",
     "t            Toggle contents",
     "r            Refresh file",
+    "[ / ]        Previous / next change (wraps)",
+    "?            Key bindings",
     "j / Down     Scroll down",
     "k / Up       Scroll up",
     "d / u        Half page down / up",
@@ -59,16 +67,17 @@ const KEYS: &[&str] = &[
     "h / Left     Pan left",
     "l / Right    Pan right",
     "Mouse wheel  Document / contents",
-    "Click        Heading / inspect link",
+    "Click        Footer / heading / inspect link",
     "Palette: type to filter; Up/Down to select",
     "Enter        Run selected command",
-    "Esc          Close palette or key help",
+    "Esc          Back / close; dismiss notice",
 ];
 
 impl Palette {
-    pub fn new(kind: Kind) -> Self {
+    pub fn new(kind: Kind, from_commands: bool) -> Self {
         Self {
             kind,
+            from_commands,
             query: String::new(),
             selected: 0,
             offset: 0,
@@ -127,9 +136,10 @@ impl Palette {
         let query_rows = u16::from(self.kind != Kind::Keys).min(inner.height);
         if query_rows > 0 {
             let prompt = format!("> {}", self.query);
-            // Keep the end of a long query visible without slicing UTF-8 bytes.
-            let offset = unicode_width::UnicodeWidthStr::width(prompt.as_str())
-                .saturating_sub(usize::from(inner.width));
+            // Keep the end of a long query, plus one cell for the cursor,
+            // visible without slicing UTF-8 bytes.
+            let full = unicode_width::UnicodeWidthStr::width(prompt.as_str());
+            let offset = (full + 1).saturating_sub(usize::from(inner.width));
             let mut line = prompt.as_str();
             let mut skipped = 0;
             while skipped < offset {
@@ -138,6 +148,11 @@ impl Palette {
                 };
                 skipped += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
                 line = &line[c.len_utf8()..];
+            }
+            // Skipping a wide character can overshoot, so measure what remains.
+            let shown = unicode_width::UnicodeWidthStr::width(line);
+            if shown < usize::from(inner.width) {
+                frame.set_cursor_position(Position::new(inner.x + shown as u16, inner.y));
             }
             frame.render_widget(
                 Paragraph::new(line).style(theme.style()),
@@ -188,10 +203,12 @@ impl Palette {
             );
         }
         if inner.height > 0 {
-            let help = if self.kind == Kind::Keys {
-                "↑/↓ scroll · Esc close"
-            } else {
-                "↑/↓ select · Enter run · Esc close"
+            let help = match self.kind {
+                Kind::Commands => "↑/↓ select · Enter run · Esc close",
+                Kind::Themes if self.from_commands => "↑/↓ select · Enter apply · Esc back",
+                Kind::Themes => "↑/↓ select · Enter apply · Esc close",
+                Kind::Keys if self.from_commands => "↑/↓ scroll · Esc back",
+                Kind::Keys => "↑/↓ scroll · Esc close",
             };
             frame.render_widget(
                 Paragraph::new(help).style(theme.style().fg(theme.accent())),
@@ -205,7 +222,20 @@ impl Palette {
         let last = entries.len().saturating_sub(1);
         match event {
             Event::Key(key) => match key.code {
-                KeyCode::Esc => return Some(Command::Dismiss),
+                KeyCode::Esc if !self.from_commands => return Some(Command::Dismiss),
+                KeyCode::Esc => {
+                    // Back to the command list, on the command that opened us.
+                    let origin = if self.kind == Kind::Themes {
+                        "Theme"
+                    } else {
+                        "Keys"
+                    };
+                    *self = Self::new(Kind::Commands, false);
+                    self.selected = COMMANDS
+                        .iter()
+                        .position(|(label, _)| label.starts_with(origin))
+                        .unwrap_or(0);
+                }
                 KeyCode::Enter if self.kind != Kind::Keys => {
                     return entries.get(self.selected).map(|(_, c)| *c);
                 }
@@ -245,20 +275,146 @@ impl Palette {
             Event::Mouse(mouse) => match mouse.kind {
                 MouseEventKind::ScrollDown => self.selected = (self.selected + 1).min(last),
                 MouseEventKind::ScrollUp => self.selected = self.selected.saturating_sub(1),
-                MouseEventKind::Down(MouseButton::Left)
-                    if self.kind != Kind::Keys
-                        && self
-                            .items_area
-                            .contains(Position::new(mouse.column, mouse.row)) =>
+                MouseEventKind::Moved | MouseEventKind::Down(MouseButton::Left)
+                    if self.kind != Kind::Keys =>
                 {
-                    return entries
-                        .get(self.offset + usize::from(mouse.row - self.items_area.y))
-                        .map(|(_, c)| *c);
+                    // Only a drawn row holding a real entry can be hovered or
+                    // clicked; blank rows and space outside change nothing.
+                    let point = Position::new(mouse.column, mouse.row);
+                    let row = self
+                        .items_area
+                        .contains(point)
+                        .then(|| self.offset + usize::from(mouse.row - self.items_area.y));
+                    if let Some((row, (_, command))) =
+                        row.and_then(|row| entries.get(row).map(|entry| (row, entry)))
+                    {
+                        self.selected = row;
+                        if mouse.kind != MouseEventKind::Moved {
+                            return Some(*command);
+                        }
+                    }
                 }
                 _ => {}
             },
             _ => {}
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyEvent, MouseEvent};
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn render(terminal: &mut Terminal<TestBackend>, palette: &mut Palette) -> Vec<String> {
+        terminal
+            .draw(|frame| palette.draw(frame, Theme::Terminal))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// Text of the highlighted (theme-reversed) list row, if any.
+    fn selected(terminal: &Terminal<TestBackend>, rows: &[String]) -> Option<String> {
+        let buffer = terminal.backend().buffer();
+        (3..buffer.area.height - 3)
+            .find(|&y| buffer[(2, y)].modifier.contains(Modifier::REVERSED))
+            .map(|y| {
+                rows[usize::from(y)]
+                    .trim_matches(|c: char| c == '│' || c.is_whitespace())
+                    .to_string()
+            })
+    }
+
+    fn mouse(kind: MouseEventKind, column: u16, row: u16) -> Event {
+        Event::Mouse(MouseEvent {
+            kind,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        })
+    }
+
+    fn key(code: KeyCode) -> Event {
+        Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn hover_selects_without_activation_cursor_tracks_query_and_escape_backs_out() {
+        // 60x14: query row y=2 (text from x=2), list y=3..=10, help y=11.
+        let mut terminal = Terminal::new(TestBackend::new(60, 14)).unwrap();
+        let mut palette = Palette::new(Kind::Commands, false);
+        let rows = render(&mut terminal, &mut palette);
+        assert!(selected(&terminal, &rows).unwrap().starts_with("Theme"));
+        assert!(terminal.backend().cursor_visible());
+        terminal.backend_mut().assert_cursor_position((4, 2));
+
+        let moved = MouseEventKind::Moved;
+        let click = MouseEventKind::Down(MouseButton::Left);
+        assert!(palette.event(mouse(moved, 10, 5)).is_none());
+        let rows = render(&mut terminal, &mut palette);
+        assert!(selected(&terminal, &rows).unwrap().starts_with("Keys"));
+        for c in "Keys".chars() {
+            palette.event(key(KeyCode::Char(c)));
+        }
+        render(&mut terminal, &mut palette);
+        // Blank list rows and space outside the modal neither select nor run.
+        for (kind, column, row) in [(moved, 10, 9), (moved, 0, 0), (click, 10, 9), (click, 0, 0)] {
+            assert!(palette.event(mouse(kind, column, row)).is_none());
+        }
+        let rows = render(&mut terminal, &mut palette);
+        assert!(selected(&terminal, &rows).unwrap().starts_with("Keys"));
+        assert!(matches!(
+            palette.event(key(KeyCode::Enter)),
+            Some(Command::Keys)
+        ));
+
+        // Theme rows get the same hover feedback.
+        let mut themes = Palette::new(Kind::Themes, true);
+        render(&mut terminal, &mut themes);
+        assert!(themes.event(mouse(moved, 10, 4)).is_none());
+        let rows = render(&mut terminal, &mut themes);
+        let second = Theme::all().nth(1).unwrap();
+        assert_eq!(selected(&terminal, &rows).unwrap(), second.name());
+        assert!(matches!(
+            themes.event(key(KeyCode::Enter)),
+            Some(Command::SetTheme(theme)) if theme == second
+        ));
+
+        // Escape from a nested list returns to commands; Escape again closes.
+        for (kind, origin) in [(Kind::Themes, "Theme"), (Kind::Keys, "Keys")] {
+            let mut palette = Palette::new(kind, true);
+            render(&mut terminal, &mut palette);
+            assert!(palette.event(key(KeyCode::Esc)).is_none());
+            let rows = render(&mut terminal, &mut palette);
+            assert!(rows.concat().contains("Command palette"));
+            assert!(selected(&terminal, &rows).unwrap().starts_with(origin));
+            assert!(terminal.backend().cursor_visible());
+            assert!(matches!(
+                palette.event(key(KeyCode::Esc)),
+                Some(Command::Dismiss)
+            ));
+        }
+
+        // A long query scrolls so the cursor stays inside the modal.
+        let mut palette = Palette::new(Kind::Commands, false);
+        for _ in 0..80 {
+            palette.event(key(KeyCode::Char('x')));
+        }
+        let rows = render(&mut terminal, &mut palette);
+        assert!(rows.concat().contains("No matches"));
+        terminal.backend_mut().assert_cursor_position((57, 2));
+        // Too small for a query row: no stray cursor.
+        let mut tiny = Terminal::new(TestBackend::new(3, 3)).unwrap();
+        render(&mut tiny, &mut palette);
+        assert!(!tiny.backend().cursor_visible());
     }
 }

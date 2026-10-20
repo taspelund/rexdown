@@ -11,6 +11,7 @@ crossterm = "0.29"
 dirs = "6"
 pulldown-cmark = "0.13"
 ratatui = "0.30"
+similar = "2.7.0"
 syntect = { version = "5.3", default-features = false, features = ["default-fancy"] }
 time = "0.3"
 two-face = { version = "0.5", default-features = false, features = ["syntect-fancy"] }

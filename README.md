@@ -105,7 +105,10 @@ belongs to the Amp tool. Neither command depends on the checkout staying in plac
 ## Controls and rendering
 
 - **Ctrl+P**: open/close the searchable command palette. Type to filter, use
-  up/down to select, then Enter (or click) to run a command. Escape dismisses it.
+  up/down or hover to select, then Enter (or click) to run a command. Escape
+  returns from themes/help opened through the palette to commands; another
+  Escape closes the palette. Help opened directly with `?` or the footer closes
+  with one Escape.
 - Mouse wheel / up and down arrows / Page Up / Page Down: scroll
 - `j` / `k`: scroll down / up; `g` / `G`: top / bottom
 - `d` / `u`: down / up half a screen, like `less` (adapts to pane height)
@@ -113,19 +116,26 @@ belongs to the Amp tool. Neither command depends on the checkout staying in plac
 - `t`: expand/collapse the clickable table of contents (**hidden by default**)
 - Mouse wheel over contents: scroll the heading list
 - `r`: refresh; `q` or Ctrl-C: exit (closes a shell-free Rex preview)
+- `[` / `]`: previous / next changed block, wrapping around at the ends
+- `?`: keybinding help. Footer actions are clickable and highlight on hover.
+- The header shows the last load/update time in UTC, plus the visible row range
+  and change count when space permits. Unchanged polls do not reset the time.
+- Notices appear above the footer and disappear after eight seconds, on document
+  navigation, or with Escape/click. They never replace the footer controls.
 - File read failures show a retrying status and preserve the last good content.
 - Links within the document navigate to headings. Other links are displayed,
   not opened; previewing a document never runs code or opens URL handlers.
 
-The palette includes **Theme**, **Quit**, **Keys**, **Screenshot**, **Refresh**, and
-**Contents**. The default **Terminal** theme inherits the terminal's foreground,
+The palette includes **Theme**, **Quit**, **Keys**, **Screenshot**, **Refresh**,
+**Contents**, **Previous change**, and **Next change**. The default **Terminal**
+theme inherits the terminal's foreground,
 background, and ANSI palette, like Helix's `term*` themes. It does not read or
 change terminal configuration. Theme also offers 12 bundled choices: Dark, Light,
 Dracula, Nord, Catppuccin Mocha/Latte, Gruvbox Dark/Light, Solarized Dark/Light, TwoDark, and
 Monokai Extended. The named themes use the same bundled palette for the UI and
 code highlighting; no downloads or system configuration are needed. The choice
 lasts for this viewer session. Keys opens scrollable keybinding help
-(arrows, Page Up/Down, or mouse wheel; Escape closes it).
+(arrows, Page Up/Down, or mouse wheel; Escape returns to where you opened it).
 
 Screenshot saves the **visible document viewport**, without the palette overlay,
 as a self-contained SVG in **Pictures/Rexdown** (normally `~/Pictures/Rexdown`).
@@ -139,7 +149,7 @@ rexdown --screenshot-dir ~/Desktop/exports discussion.md
 The directory is created on export. Relative paths are relative to the viewer's
 working directory. Names include the document stem and UTC date/time, for example
 `discussion-2026-10-19_14-30-00Z.svg`. A numeric suffix is added on collision;
-existing files are never overwritten. The footer reports the saved path or a
+existing files are never overwritten. A notice reports the saved path or a
 write error. Existing screenshots are not moved. It does not upload anything;
 the SVG contains the visible document text, so treat it like the original file
 when sharing. The document itself is never modified.
@@ -151,10 +161,22 @@ theme instead. Bundled themes need no terminal queries.
 
 The original UTF-8 Markdown file is the only source of truth. Rexdown polls its
 contents every **750 ms**, including same-size edits and editor atomic saves;
-it does not use inotify or a platform file watcher. Refresh preserves
-the vertical scroll offset, clamped if the document shrinks; it does not track
-the same paragraph when text is inserted above it. Headings, tables, highlighted
-code, nested lists, task lists, and fenced text diagrams render. Prose and table
+it does not use inotify or a platform file watcher. Refresh follows the source
+block at the top of the viewport when text changes above it. Resizing or toggling
+contents keeps the same block and clamps the row offset within it. If that block
+is deleted, the reader follows its replacement or the next surviving text,
+clamped near the end of the document. This is paragraph/block anchoring, not
+character-exact scroll restoration; repeated or extensively rewritten text can
+only be matched approximately.
+
+A slim gutter marks changed blocks from the **most recent content update**.
+Deletion-only changes mark the next surviving row (or the final row at EOF).
+Unchanged polls and manual refreshes keep the marks; the next content update
+replaces them. `[` / `]` and the palette navigate these marks without opening a
+diff view. They do not compare against Git or accumulate a session history.
+
+Headings, tables, highlighted code, nested lists, task lists, and fenced text
+diagrams render. Prose and table
 cells wrap to the pane; fenced code remains unwrapped. Horizontal panning applies
 to the document viewport. Custom HTML/CSS, images, and Mermaid rendering are not
 supported; HTML and image descriptions are inert text. Syntax grammars are

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, ops::Range};
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Color, Modifier, Style};
@@ -88,6 +88,24 @@ pub struct Heading {
 #[derive(Default)]
 pub struct Document {
     pub rows: Vec<Row>,
+    /// Source provenance for each rendered row, exactly parallel to `rows`.
+    ///
+    /// `row_sources[i]` is the byte range of the logical source block that
+    /// produced `rows[i]`. Ranges are non-empty, lie within the rendered
+    /// source, and start and end on UTF-8 character boundaries. Every row of
+    /// one block (including wrapped continuations) carries the same range, so
+    /// the set of ranges does not depend on the render width.
+    ///
+    /// - Paragraphs, headings, raw HTML blocks, and rules use the block range.
+    /// - A list item's own line uses the range from its marker through its
+    ///   own text (excluding nested blocks); a loose item's first paragraph
+    ///   extends from the marker through that paragraph.
+    /// - Code blocks use one range per source line (indentation stripped by
+    ///   the containing list or quote is not included).
+    /// - Tables use one range per header or body row; the header separator
+    ///   uses the header range.
+    /// - Inserted blank rows repeat the preceding row's range.
+    pub row_sources: Vec<Range<usize>>,
     pub headings: Vec<Heading>,
     pub links: Vec<String>,
 }
@@ -115,19 +133,47 @@ impl Renderer {
             indent: 0,
             quote: 0,
             available: available.max(1),
+            src: 0..0,
+            block_row: 0,
+            open: false,
         };
         let mut heading = None;
         let mut anchors = HashSet::new();
-        let mut code: Option<(String, String)> = None;
+        let mut code: Option<(String, String, Vec<CodeText>)> = None;
         let mut table: Option<Table> = None;
         let options = Options::ENABLE_TABLES
             | Options::ENABLE_STRIKETHROUGH
             | Options::ENABLE_TASKLISTS
             | Options::ENABLE_HEADING_ATTRIBUTES;
-        for event in Parser::new_ext(source, options) {
+        for (event, range) in Parser::new_ext(source, options).into_offset_iter() {
+            // Provenance comes only from parser offsets: block starts open a
+            // new logical block, inline events widen the current one.
+            match &event {
+                Event::Start(
+                    Tag::Paragraph | Tag::Heading { .. } | Tag::HtmlBlock | Tag::Table(_),
+                ) => {
+                    if matches!(event, Event::Start(Tag::Heading { .. } | Tag::Table(_))) {
+                        b.flush();
+                    }
+                    b.begin(range.clone());
+                }
+                Event::Start(Tag::List(_) | Tag::BlockQuote(_))
+                | Event::End(
+                    TagEnd::Paragraph
+                    | TagEnd::Heading(_)
+                    | TagEnd::Item
+                    | TagEnd::List(_)
+                    | TagEnd::BlockQuote(_)
+                    | TagEnd::CodeBlock
+                    | TagEnd::Table
+                    | TagEnd::HtmlBlock,
+                ) => b.open = false,
+                Event::Start(Tag::Item | Tag::CodeBlock(_)) | Event::Rule => {}
+                _ if code.is_none() => b.inline(range.clone()),
+                _ => {}
+            }
             match event {
                 Event::Start(Tag::Heading { level, id, .. }) => {
-                    b.flush();
                     heading = Some((
                         level as usize,
                         id.map(|s| s.into_string()),
@@ -216,6 +262,17 @@ impl Renderer {
                 }
                 Event::Start(Tag::Item) => {
                     b.flush();
+                    // The item's own row covers its marker line; inline text
+                    // and a loose first paragraph widen it, nested blocks don't.
+                    let line_end = source[range.clone()]
+                        .find('\n')
+                        .map_or(range.end, |n| range.start + n);
+                    let end = if line_end > range.start {
+                        line_end
+                    } else {
+                        range.end
+                    };
+                    b.begin(range.start..end);
                     b.indent = b.lists.len().saturating_sub(1) * 2;
                     let marker = match b.lists.last_mut() {
                         Some(Some(n)) => {
@@ -240,15 +297,16 @@ impl Renderer {
                 }
                 Event::Start(Tag::CodeBlock(kind)) => {
                     b.flush();
+                    b.begin(range);
                     let language = match kind {
                         CodeBlockKind::Fenced(s) => s.into_string(),
                         _ => String::new(),
                     };
-                    code = Some((language, String::new()));
+                    code = Some((language, String::new(), Vec::new()));
                 }
                 Event::End(TagEnd::CodeBlock) => {
-                    if let Some((language, source)) = code.take() {
-                        self.code(&mut b, &language, &source);
+                    if let Some((language, text, pieces)) = code.take() {
+                        self.code(&mut b, &language, &text, source, &pieces);
                     }
                     b.blank();
                 }
@@ -258,7 +316,13 @@ impl Renderer {
                         alignments,
                         rows: Vec::new(),
                         cells: Vec::new(),
+                        sources: Vec::new(),
                     });
+                }
+                Event::Start(Tag::TableHead | Tag::TableRow) => {
+                    if let Some(t) = &mut table {
+                        t.sources.push(range);
+                    }
                 }
                 Event::End(TagEnd::TableCell) => {
                     if let Some(t) = &mut table {
@@ -277,8 +341,14 @@ impl Renderer {
                     b.blank();
                 }
                 Event::Text(s) => {
-                    if let Some((_, source)) = &mut code {
-                        source.push_str(&s);
+                    if let Some((_, text, pieces)) = &mut code {
+                        pieces.push(CodeText {
+                            at: text.len(),
+                            len: s.len(),
+                            exact: source.get(range.clone()) == Some(&*s),
+                            range,
+                        });
+                        text.push_str(&s);
                     } else {
                         b.add(&s);
                     }
@@ -292,6 +362,7 @@ impl Renderer {
                 Event::HardBreak => b.flush(),
                 Event::Rule => {
                     b.flush();
+                    b.begin(range);
                     b.add(&"─".repeat(b.available.min(72)));
                     b.flush();
                     b.blank();
@@ -305,18 +376,54 @@ impl Renderer {
         b.flush();
         while b.doc.rows.last().is_some_and(Vec::is_empty) {
             b.doc.rows.pop();
+            b.doc.row_sources.pop();
         }
+        debug_assert_eq!(b.doc.rows.len(), b.doc.row_sources.len());
         b.doc
     }
 
-    fn code(&self, b: &mut Builder, language: &str, source: &str) {
+    fn code(
+        &self,
+        b: &mut Builder,
+        language: &str,
+        source: &str,
+        document: &str,
+        pieces: &[CodeText],
+    ) {
         let token = language.split_whitespace().next().unwrap_or("");
         let syntax = self
             .syntaxes
             .find_syntax_by_token(token)
             .unwrap_or_else(|| self.syntaxes.find_syntax_plain_text());
         let mut highlighter = HighlightLines::new(syntax, self.theme.data());
+        let mut at = 0;
         for line in source.split_inclusive('\n') {
+            let span = at..at + line.len();
+            at = span.end;
+            let mut origin: Option<Range<usize>> = None;
+            for p in pieces {
+                let (start, end) = (span.start.max(p.at), span.end.min(p.at + p.len));
+                if start >= end {
+                    continue;
+                }
+                let part = if p.exact {
+                    p.range.start + start - p.at..p.range.start + end - p.at
+                } else {
+                    p.range.clone()
+                };
+                origin = Some(match origin {
+                    Some(o) => o.start.min(part.start)..o.end.max(part.end),
+                    None => part,
+                });
+            }
+            let origin = origin
+                .filter(|r| {
+                    r.start < r.end
+                        && document.is_char_boundary(r.start)
+                        && document.is_char_boundary(r.end)
+                        && r.end <= document.len()
+                })
+                .unwrap_or_else(|| b.src.clone());
             let expanded = line.replace('\t', "    ");
             let mut row = plain(
                 &format!("{}│ ", " ".repeat(b.indent)),
@@ -338,9 +445,18 @@ impl Renderer {
                     None,
                 ));
             }
-            b.doc.rows.push(row);
+            b.push_row(row, origin);
         }
     }
+}
+
+/// A code block text event: its offset in the collected code text and the
+/// source range the parser reported for it.
+struct CodeText {
+    at: usize,
+    len: usize,
+    exact: bool,
+    range: Range<usize>,
 }
 
 struct Builder {
@@ -352,9 +468,46 @@ struct Builder {
     indent: usize,
     quote: usize,
     available: usize,
+    /// Source range of the logical block currently being rendered.
+    src: Range<usize>,
+    /// First row produced by the current block.
+    block_row: usize,
+    /// Whether inline content still belongs to the current block.
+    open: bool,
 }
 
 impl Builder {
+    /// Starts a block, or widens the current one when its row is still
+    /// pending (a list marker followed by a paragraph or HTML block).
+    fn begin(&mut self, range: Range<usize>) {
+        if self.line.is_empty() {
+            self.src = range;
+            self.block_row = self.doc.rows.len();
+        } else {
+            self.widen(range);
+        }
+        self.open = true;
+    }
+    fn inline(&mut self, range: Range<usize>) {
+        if self.open {
+            self.widen(range);
+        } else {
+            self.begin(range);
+        }
+    }
+    fn widen(&mut self, range: Range<usize>) {
+        if range.start < self.src.start || range.end > self.src.end {
+            self.src = self.src.start.min(range.start)..self.src.end.max(range.end);
+            let src = self.src.clone();
+            for s in &mut self.doc.row_sources[self.block_row..] {
+                *s = src.clone();
+            }
+        }
+    }
+    fn push_row(&mut self, row: Row, src: Range<usize>) {
+        self.doc.rows.push(row);
+        self.doc.row_sources.push(src);
+    }
     fn push_style(&mut self, style: Style) {
         self.styles
             .push(self.styles.last().copied().unwrap_or_default().patch(style));
@@ -375,16 +528,19 @@ impl Builder {
     }
     fn flush(&mut self) {
         if !self.line.is_empty() {
-            self.doc.rows.extend(wrap(
+            for row in wrap(
                 std::mem::take(&mut self.line),
                 self.available,
                 self.indent + self.quote * 2,
-            ));
+            ) {
+                self.push_row(row, self.src.clone());
+            }
         }
     }
     fn blank(&mut self) {
         if self.doc.rows.last().is_some_and(|r| !r.is_empty()) {
-            self.doc.rows.push(Vec::new());
+            let src = self.doc.row_sources.last().cloned().unwrap_or_default();
+            self.push_row(Vec::new(), src);
         }
     }
 }
@@ -393,6 +549,8 @@ struct Table {
     alignments: Vec<Alignment>,
     rows: Vec<Vec<Row>>,
     cells: Vec<Row>,
+    /// Source range of each header/body row, parallel to `rows`.
+    sources: Vec<Range<usize>>,
 }
 
 impl Table {
@@ -413,7 +571,9 @@ impl Table {
                 *w -= 1;
             }
         }
+        let fallback = b.src.clone();
         for (i, row) in self.rows.into_iter().enumerate() {
+            let src = self.sources.get(i).cloned().unwrap_or(fallback.clone());
             let cells: Vec<_> = row
                 .into_iter()
                 .zip(&widths)
@@ -447,7 +607,7 @@ impl Table {
                     ));
                 }
                 out.pop(); // The final border has no inter-column space after it.
-                b.doc.rows.push(out);
+                b.push_row(out, src.clone());
             }
             if i == 0 {
                 let bar = format!(
@@ -458,9 +618,7 @@ impl Table {
                         .collect::<Vec<_>>()
                         .join("┼")
                 );
-                b.doc
-                    .rows
-                    .push(plain(&bar, Style::default().fg(Color::DarkGray), None));
+                b.push_row(plain(&bar, Style::default().fg(Color::DarkGray), None), src);
             }
         }
     }
